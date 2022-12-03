@@ -53,9 +53,11 @@ lipgene_data <- read.csv("C:\\Users\\hoken\\surfdrive\\Shared\\Akiya_Hoken_2022\
 lipgene_data  <- filter(lipgene_data, !(lipgene_data$dropout %in% c(2,4,5,6)))
 
 #Eliminate useless data (we eliminate "diet" since we have "dietgroup" with same info) (SI_sqrt_ch is nzv, thus we eliminate)
-eliminate <- c("phase","partnernr","center","subjectnr","diet","MF_LF","dropout")
+#also eliminating si_sqrt_ch because its fucking up bagImpute
+eliminate <- c("phase","partnernr","center","subjectnr","diet","MF_LF","dropout","SI_sqrt_ch")
 
 lipgene_data <- lipgene_data[, !(names(lipgene_data) %in% eliminate)] 
+print("hi")
 
 ##~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 ##                                PREPROCESSING                             ----
@@ -65,14 +67,15 @@ lipgene_data <- lipgene_data[, !(names(lipgene_data) %in% eliminate)]
 # nzv <- nearZeroVar(lipgene_data)
 # filteredLipgene <- lipgene_data[,-nzv]
 
-imp <- preProcess(lipgene_data, method = "bagImpute", k=5)
+imp <- caret::preProcess(lipgene_data, method = "bagImpute")
 lipgene_data <- predict(imp,lipgene_data)
 
 #save point to not keep running same 
 save <- lipgene_data
 lipgene_data <- save
 
-#Function for creating a column with their skeletal muscle mass
+#Function for creating a column with their skeletal muscle mass 
+#CHANGE THE TARGET VARIABLE HERE, BUT NOT THE NAME SO U DONT HAVE TO CHANGE EVERYTHING!!
 lipgene_data$smm_delta <- with(lipgene_data, 
                             lipgene_data$weight_ch*0.23
                               )
@@ -118,8 +121,8 @@ diet_D_F <- data.frame()
 
 #split each diet groups and their sex (categorical)
 #VERY INEFFICIENT CODE FOR NOW!!!!
-for (i in 1:nrow(lipgene_data)) {
-  if (lipgene_data[i,]$dietgroup == 1){
+for (i in 1:nrow(lipgene_data)) {         #for every observations,
+  if (lipgene_data[i,]$dietgroup == 1){   #if the dietgroup is 1, then store it in diet_A
     diet_A = rbind(diet_A,lipgene_data[i,])
     if (lipgene_data[i,]$gender==0){
       diet_A_M = rbind(diet_A_M,lipgene_data[i,])
@@ -263,16 +266,16 @@ diet_D_M <- diet_D_M[, !(names(diet_D_M) %in% eliminate_ds)]
 set.seed(5)
   
 # Get the number of observations
-n_obs <- nrow(diet_A)
+n_obs <- nrow(diet_C)
   
 # Identify row to split on: split
 split <- round(n_obs * 0.75)
   
 # Create train
-train <- diet_A[1:split, ]
+train <- diet_C[1:split, ]
   
 # Create test
-test = diet_A[(split+1):nrow(diet_A),]
+test = diet_C[(split+1):nrow(diet_C),]
   
 #split predictor variable to target variable, favourable with caret packages
 x <- train[,colnames(train) != "smm_delta"]
@@ -308,8 +311,10 @@ myControl <- trainControl(
 set.seed(5)
 # custom tuning grid
 myGrid <- expand.grid(
+  #alpha =0,   #best fit
   alpha = seq(0,1, length =5),   #0 - pure ridge to 1- pure lasso.
-  lambda = seq(1,0.0001,length =100) #go from 0.0001 to 1, having 100 stops in between
+  #lambda = 1 #bestfit
+  lambda = seq(0.0875,0.0001,length =100) #go from 0.0001 to 1, having 100 stops in between. (diet_C collapses at anything higher that 0.0875)
 )
 
 #Model object
@@ -337,7 +342,7 @@ rmse_glmnet <- postResample(pred = p_glmnet, obs = test$smm_delta)
 set.seed(5)
 # custom tuning grid
 myGrid <- expand.grid(
-  ncomp = seq(1,5,length=10) #number of components to include in the model
+  ncomp = c(1:44) #number of components to include in the model
 )
 
 #model
@@ -346,6 +351,7 @@ pls <- train(
   x = x,
   y = y,
   preProcess = c("center","scale"),
+  mode="regression",
   method = "pls",
   tuneGrid = myGrid,
   trControl = myControl
@@ -367,8 +373,10 @@ rmse_pls <- postResample(pred = p_pls, obs = test$smm_delta)
 set.seed(5)
 #custom tuning grid
 myGrid <- expand.grid(
-  lambda = c(1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 0.0, 1.0, 10.0, 100.0),   #
-  fraction = seq(0,1, length = 100)   #fraction of ratio between L1/L2 pentalty
+  lambda = c(1e-5,1e-4,1e-3,1e-2,1e-1,0,1,10,100,1000),   #weight decay
+  #lambda = 1e-5,  # best fit
+  fraction = seq(0.0001,1, length = 100)   #fraction of ratio between L1/L2 pentalty (diet_C, including 0 collapses for some reason, so set to 0.0001)
+  #fraction = 0.01010101   #best fit
 )
 
 #model
@@ -400,8 +408,14 @@ set.seed(5)
 myGrid <- expand.grid(
   n.trees = seq(10,200, length = 50), #number of trees, from 10 to 200 having 50 stops
   interaction.depth = seq(1,10,length=10), #complexity of the trees
-  shrinkage = 0.1,  #learning rate
+  shrinkage = c(0.1,0.01,0.001),  #learning rate
   n.minobsinnode = 10  #minimum number of training set samples in a node
+
+  # #best tune 
+  # n.trees = 10, 
+  # interaction.depth = 5,
+  # shrinkage = 0.1,  
+  # n.minobsinnode = 10  
 )
 
 #model
@@ -430,9 +444,12 @@ rmse_gbm <- postResample(pred = p_gbm, obs = test$smm_delta) #out of sample rmse
 set.seed(5)
 #custom tuning grid
 myGrid <- expand.grid(
-  mtry = c(2,3,4,5,10,20),   #Number of variables to possibly split at in each node. 
-  min.node.size = c(10,20),    #Minimal node size
-  splitrule = c("variance", "extratrees", "maxstat")   #Splitting rule
+  mtry = c(2,3,4,5,10,20),   #Number of variables to possibly split at in each node.
+  min.node.size = c(10,20,30,40,50),    #Minimal node size
+  splitrule = c("variance","maxstat","extratrees")
+  # mtry = 10,   #best tune
+  # min.node.size = 30,    #best tune
+  # splitrule = "extratrees"   #best
 )
 
 #model
@@ -486,7 +503,7 @@ rmse_treebag <- postResample(pred = p_treebag, obs = test$smm_delta)
 set.seed(5)
 #custom tuning grid
 myGrid <- expand.grid(
-  neurons = c(15)   #Number of variables to possibly split at in each node.
+  neurons = c(1,2,3,4,5,10,15)   #Number of variables to possibly split at in each node.
 )
 
 #model
@@ -514,8 +531,10 @@ rmse_brnn <- postResample(pred = p_brnn, obs = test$smm_delta)
 set.seed(5)
 #custom tuning grid
 myGrid <- expand.grid(
-  size = c(1,2,3,4,5),  #number of hidden layers
-  decay = c(1e-3, 1e-2, 1e-1, 0.0, 1.0,10,100)
+  size = c(1,2,3,4,5,6,7,8),  #number of hidden layers
+  decay = c(300,400,500,600,700,800)
+  # size = 4,  #best tune
+  # decay = 300
 )
 
 #model 
@@ -571,7 +590,8 @@ rmse_glmStepAIC <- postResample(pred = p_glmStepAIC, obs = test$smm_delta)
 set.seed(5)
 
 myGrid <- expand.grid(
-  nvmax = c(3,4,5,10,15)
+  nvmax = c(2,3,4,5,10,15,20,30)
+  #nvmax = 2
 )
 
 tic()
@@ -630,7 +650,7 @@ print(os[which(os$os_rmse == min(os)),,drop=FALSE])
 ##  ~ Did the model overfit?  ----
 ##~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #If the training set performed better than the test set, then the model is overfitted
-overfit <- data.frame(row.names = model_names,  os$os_rmse-is_rmse_results$RMSE.Mean) #test error - train error = overfit
+overfit <- data.frame(row.names = model_names,  os$os_rmse-is_rmse_results$RMSE.Mean) #test error - train error = overfit (positive value means overfitting)
 #rename column
 colnames(overfit) <- "overfit"
 overfit
@@ -662,6 +682,20 @@ colnames(df_varimp) <- model_names
 #add the row numbers up to see the total importance? (maybe irrelevant)
 df_varimp = as.data.frame(scale(df_varimp))
 df_varimp$sum_scaled <- rowSums(df_varimp)
+
+
+#EXPORT ALL RELEVANT DATA AS CSV
+#in sample rmse
+write.csv(is_rmse_results,"C:\\Users\\hoken\\surfdrive\\Shared\\Akiya_Hoken_2022\\C_is_rmse.csv")
+#ou-of-sample rmse
+write.csv(os,"C:\\Users\\hoken\\surfdrive\\Shared\\Akiya_Hoken_2022\\C_os_rmse.csv")
+#does it overfit
+write.csv(overfit,"C:\\Users\\hoken\\surfdrive\\Shared\\Akiya_Hoken_2022\\C_overfit.csv")
+#variable importance
+write.csv(df_varimp,"C:\\Users\\hoken\\surfdrive\\Shared\\Akiya_Hoken_2022\\C_varimp.csv")
+
+#=B2*(1-(SQRT(1-((1.96*SQRT(2))/(SQRT(124))))))  for excel calculating positive error rmse
+#=B2*((SQRT(1+((1.96*SQRT(2))/(SQRT(124)))))-1)  for negative error rmse
 
 #### RESULTS END ####             
 
